@@ -1,0 +1,148 @@
+---
+title: "Using data from accelerometers to qualify how well people do exercise"
+subtitle: "Practical Machine Learning"
+author: "rmmoya"
+date: "20 de abril de 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+```
+
+## Summary
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants is used.
+
+Two prediction models, Decision Tree and Random Forest, have been built to predict the quality of the execution of the exercises using a training data set of more than 10k samples. As a result, Random Forest performed the best and was used to run predictions for 20 additional samples.
+
+## Exploratory data analysis
+
+Training and testing data sets are downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn
+
+```{r load_data, cache = TRUE}
+training <- read.csv('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv')
+
+testing <- read.csv('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv')
+```
+
+```{r data_inspection}
+print(rbind(training = c(obs = dim(training)[1], vars = dim(training)[2]),
+            testing = c(obs = dim(testing)[1], vars = dim(testing)[2])))
+```
+
+The variable classe in the training set indicates the manner in which they did the exercise. Let's look at the number of samples each classe has:
+```{r explore_samples-per-classe}
+with(training, table(classe))
+```
+
+As indicated in HAR (Human Activity Recognition) project, "Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg)".
+
+```{r explore_samples-per-user}
+
+training %>% 
+  group_by(user_name, classe) %>% 
+  summarize(samples = n()) %>%
+  ggplot(., aes(x = user_name, y = samples, color = classe)) + geom_point()
+```
+
+For each of the 4 sensors (belt, arm, dumbbell and forearm) there are `r length(grep("belt", names(training)))` variables from a set of measurements obtained from each sensor. For instance, for the belt:
+
+```{r explore_sensors}
+names(training)[grep("belt", names(training))]
+```
+
+Inspecting these variables with str() function, it can be observed that the training data needs to be cleaned up:
+1 - There are "#DIV/0!" values and should be replaced by NA
+2 - Some of them are read as factor strings instead of numeric.
+
+Data must be reimported by specifying in the read.csv() function to treat "#DIV/0!" and "NA" as NA.
+
+```{r}
+training <- read.csv('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', na.strings = c("#DIV/0!", "NA"))
+testing <- read.csv('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', na.strings = c("#DIV/0!", "NA"))
+```
+
+
+Finally, NA values must be removed. It can be observed that there are variables that are mostly NAs, so they can be removed from the list of predictors to use:
+
+```{r}
+obs <- dim(training)[1]
+na_count <- sapply(training, function(x) sum(is.na(x)))
+print(na_count[na_count > 0]/obs*100)
+```
+It can be observed that all these variables are completely or almost (>97%) empty.
+
+## Building a prediction model
+
+Two important steps must be taken before training a prediction model:
+* Data cleanup. Remove the variables that are almost empty.
+* Split the data into training and test set for cross-validation.
+
+For the data cleanup, a total of `{r length(na_count[na_count > 0])}`empty variables (>97% of NA values), in addition to "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window", can be removed.
+
+
+```{r data_partition}
+dimensions_to_remove <- c(names(na_count[na_count > 0]), "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+
+inTrain <- createDataPartition(training$classe, p = 0.6)[[1]]
+
+train <- training[inTrain, ] %>% select(-dimensions_to_remove)
+test <- training[-inTrain,] %>% select(-dimensions_to_remove)
+
+print(rbind(train_set = c(obs = dim(train)[1], vars = dim(train)[2]),
+            test_set = c(obs = dim(test)[1], vars = dim(test)[2])))
+```
+
+### Decision-tree model
+
+At a first step, a decision tree model can be built and verify the level of accuracy that can be obtained.
+
+```{r decision_tree_model}
+model_dt <- rpart(classe ~ ., data = train, method = "class")
+fancyRpartPlot(model_dt)
+```
+
+```{r}
+pred_dt <- rpart.predict(model_dt, newdata = test, type = "class")
+confusionMatrix(pred_dt, test$classe)
+```
+
+It can be seen that an accuracy of ~73% is obtained with a low p-Value, so the decision tree model is having overall good results but looking into more details it is not performing well. For instance, sensitivity for classes B and D are not goot at all, with an approx.50% of misclassified samples.
+
+### Random forest model
+In order to improve the metrics of decision tree model, random forest can be tried.
+
+```{r random_forest_model}
+model_rf <- randomForest::randomForest(classe ~ ., data = train, ntree = 1000)
+```
+
+```{r}
+pred_rf <- predict(model_rf, newdata = test)
+confusionMatrix(pred_rf, test$classe)
+```
+
+As expected, Random Forest is performing much better than Decision Tree. Actually, the confusion matrix metrics are really good, with 99% accuracy, sensitivity and specificity for every class.
+
+
+## Predicting with the testing data
+
+```{r}
+predictions <- tibble(user_name = testing$user_name, predicted_classe = predict(model_rf, select(testing, -c(dimensions_to_remove, "problem_id"))))
+table(predictions)
+```
+
+
+## Conclusion
+The prediction model based on Random Forest seems to be very adequeate to predict the classe variable using the measurements from the relevant sensors. With an accuracy of 99%, we are in good position to predict the quality of the execution of the 20 additional samples that have been given.
+
+## Data
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. 
+
+They have been very generous in allowing their data to be used for this kind of assignment.
